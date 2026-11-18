@@ -6,9 +6,13 @@ Paket: CarPlayDeneme/YuzSurus/YuzSurusProtokol.swift ile aynı JSON.
 Kurulum (bir kez):  pip install zeroconf vgamepad
   vgamepad ilk kurulumda ViGEmBus sürücüsünü de kurar (onay penceresi çıkar).
 Çalıştır:           python yuz_direksiyon.py            (sanal Xbox kolu)
+                    python yuz_direksiyon.py --tek-eksen  (gaz/fren sol çubuğun yukarı/aşağısı; NFS 2 gibi eski oyunlar için)
                     python yuz_direksiyon.py --klavye   (ok tuşları; kol tanımayan oyunlar için)
                     python yuz_direksiyon.py --kuru     (hiçbir şey basmaz, değerleri yazar; deneme)
 Kol eşlemesi: sol çubuk X = direksiyon, sağ tetik = gaz, sol tetik = fren, A = nitro, B = el freni.
+  Eski (DirectInput) oyunlar Xbox kolunun iki tetiğini TEK eksende birleşik görür (ikisine birden basınca sıfırlanır,
+  gaz ve fren ayrı atanamaz). --tek-eksen ile gaz = sol çubuk yukarı, fren = sol çubuk aşağı olur; oyunda "hızlanma/fren"
+  için sol çubuğun dikey eksenini ata. Tetikler bu modda kullanılmaz.
 Güvenlik: 0,3 sn paket gelmezse ya da yüz kaybolursa kol ortalanır, tuşlar bırakılır. Ctrl+C ile çık.
 """
 import json
@@ -21,6 +25,7 @@ PORT = 47800
 SERVIS = "_denemeyuz._udp.local."
 KURU = "--kuru" in sys.argv
 KLAVYE = "--klavye" in sys.argv
+TEK_EKSEN = "--tek-eksen" in sys.argv
 AD = socket.gethostname()
 
 # ---------- Çıkış: sanal Xbox kolu ----------
@@ -31,9 +36,17 @@ class Kol:
         self.k = vg.VX360Gamepad()
 
     def yaz(self, d):
-        self.k.left_joystick_float(x_value_float=max(-1.0, min(1.0, d["direksiyon"])), y_value_float=0.0)
-        self.k.right_trigger_float(value_float=d["gaz"])
-        self.k.left_trigger_float(value_float=d["fren"])
+        x = max(-1.0, min(1.0, d["direksiyon"]))
+        if TEK_EKSEN:
+            # fren gazdan önceliklidir: ikisi birden varsa yalnız fren
+            y = -d["fren"] if d["fren"] > 0.05 else d["gaz"]
+            self.k.left_joystick_float(x_value_float=x, y_value_float=max(-1.0, min(1.0, y)))
+            self.k.right_trigger_float(value_float=0.0)
+            self.k.left_trigger_float(value_float=0.0)
+        else:
+            self.k.left_joystick_float(x_value_float=x, y_value_float=0.0)
+            self.k.right_trigger_float(value_float=d["gaz"])
+            self.k.left_trigger_float(value_float=d["fren"])
         B = self.vg.XUSB_BUTTON
         (self.k.press_button if d["nitro"] else self.k.release_button)(button=B.XUSB_GAMEPAD_A)
         (self.k.press_button if d["elFreni"] else self.k.release_button)(button=B.XUSB_GAMEPAD_B)
@@ -158,7 +171,7 @@ def main():
     sok.bind(("0.0.0.0", PORT))
     threading.Thread(target=dinle, args=(sok,), daemon=True).start()
     z, bilgi, ip = yayinla()
-    mod = "kuru" if KURU else ("klavye" if KLAVYE else "sanal Xbox kolu")
+    mod = "kuru" if KURU else ("klavye" if KLAVYE else ("sanal Xbox kolu, gaz/fren sol çubukta" if TEK_EKSEN else "sanal Xbox kolu"))
     print(f"Yüz Direksiyon hazır: {AD} ({ip}:{PORT}), çıkış: {mod}. Telefonda Denemeler > Yüzle sür. Çıkmak: Ctrl+C")
     son_cevap = son_yazi = 0.0
     try:

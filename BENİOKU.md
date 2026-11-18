@@ -24,7 +24,14 @@ Denemek için hiçbir şey basmadan: `python yuz_direksiyon.py --kuru`.
 
 Güvenlik: 0,3 sn telefon verisi gelmezse ya da yüz kaybolursa kol ortalanır, gaz bırakılır. Çıkmak: Ctrl+C.
 
-## Bilinmeyenler (çekimden önce dene)
-- Eski oyunlar (NFS 2 gibi) Xbox kolunu DirectInput'la görür; orada iki tetik **tek eksende** birleşir.
-  Gaz/fren o eksene atanabiliyorsa sorun yok; atanamıyorsa `--klavye` modu ya da başka eşleme gerekir.
-- Windows'ta henüz hiç çalıştırılmadı; Mac'te yalnız `--kuru` modunda denendi.
+## NFS 2 gibi eski oyunlar
+Eski oyunlar Xbox kolunu DirectInput ile görür ve iki tetiği **tek eksende birleştirir**: gaz ve fren ayrı atanamaz,
+ikisine birden basınca sıfırlanır (bilinen bir Windows davranışı). O yüzden:
+
+1. Önce `python yuz_direksiyon.py --tek-eksen` ile dene. Gaz = sol çubuk yukarı, fren = sol çubuk aşağı.
+   Oyunun kontrol ayarlarında direksiyonu sol çubuğun yatay eksenine, gaz/freni dikey eksenine ata
+   (atarken telefonda başını eğ / gülümse ki oyun hareketi algılasın).
+2. Oyun kolu hiç tanımazsa: `python yuz_direksiyon.py --klavye` (ok tuşları; direksiyon ve gaz kademeli basılır).
+
+NFS 2 SE'de bu yolların hangisinin çalıştığını kimse denemedi; bu bilgi genel Windows/DirectInput davranışından.
+Windows'ta henüz hiç çalıştırılmadı; Mac'te yalnız `--kuru` modunda denendi.
