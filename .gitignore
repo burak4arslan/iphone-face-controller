@@ -1,2 +1,13 @@
+# --- Personal: never committed ---
+Config/local.env
+
+# --- Generated / build output ---
+FaceController.xcodeproj/
+iOS/Info.plist
+build/
+mac/build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
 __pycache__/
-*.pyc
+.DS_Store

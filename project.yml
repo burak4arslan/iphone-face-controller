@@ -1,0 +1,38 @@
+# The Xcode project is generated with XcodeGen: ./generate.sh (uses the team and bundle ID from Config/local.env)
+name: FaceController
+options:
+  developmentLanguage: en
+  deploymentTarget:
+    iOS: "17.0"
+settings:
+  base:
+    DEVELOPMENT_TEAM: ${FACECONTROLLER_TEAM_ID}
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.0"
+targets:
+  FaceController:
+    type: application
+    platform: iOS
+    sources:
+      - path: iOS
+        excludes: ["Info.plist"]
+    info:
+      path: iOS/Info.plist
+      properties:
+        CFBundleDisplayName: Face Controller
+        CFBundleDevelopmentRegion: en
+        CFBundleLocalizations: [en, tr]
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        # Face tracking needs the TrueDepth (Face ID) camera
+        UIRequiredDeviceCapabilities: [arkit]
+        NSCameraUsageDescription: The front Face ID camera tracks your face expressions to steer, accelerate and brake. Nothing is recorded and nothing leaves the phone except steering/gas/brake values.
+        # The phone finds the receiver on your Wi-Fi (Bonjour) and sends it small UDP packets
+        NSLocalNetworkUsageDescription: To find the Face Controller receiver on your computer (same Wi-Fi) and send it steering, gas and brake values.
+        NSBonjourServices: [_denemeyuz._udp]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ${FACECONTROLLER_BUNDLE_ID}
+        TARGETED_DEVICE_FAMILY: "1"

@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<title>Yüzle Yarış</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0f1a; overflow: hidden; font-family: -apple-system, "SF Pro Rounded", system-ui, sans-serif; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// Yüzle Yarış: a simple racing game for the Face Controller Mac receiver (served by the Mac app).
+// Ok tuşları / WASD: gaz, fren, direksiyon · Shift: nitro · Boşluk: el freni. Sessiz (ses yok).
+const cv = document.getElementById('c'), g = cv.getContext('2d');
+let W, H;
+function boyut() { W = cv.width = innerWidth * devicePixelRatio; H = cv.height = innerHeight * devicePixelRatio; }
+addEventListener('resize', boyut); boyut();
+
+// ---- Yol ----
+const SEG = 200, YOL = 2000, SERIT = 3, KAMERA_Y = 1000, GORUS = 260, FOV_DERINLIK = 0.84;
+const parcalar = [];
+function ekle(n, kivrim, tepe) {
+  const y0 = parcalar.length ? parcalar[parcalar.length - 1].y2 : 0;
+  for (let i = 0; i < n; i++) {
+    const y2 = y0 + tepe * (1 - Math.cos((i + 1) / n * Math.PI)) / 2;
+    const yOnce = parcalar.length ? parcalar[parcalar.length - 1].y2 : 0;
+    parcalar.push({ i: parcalar.length, kivrim, y1: yOnce, y2, arabalar: [] });
+  }
+}
+// Pist: düzlükler, virajlar, tepeler (rastgele değil; her denemede aynı yol)
+const plan = [
+  [80, 0, 0], [60, 2, 0], [40, 0, 1500], [70, -3, 0], [50, 0, -1500], [60, 4, 0], [40, 0, 0],
+  [80, -2, 2000], [50, 3, -2000], [60, -4, 0], [60, 0, 0], [70, 2.5, 1000], [60, -2.5, -1000],
+  [50, 5, 0], [40, 0, 0], [80, -3, 1500], [80, 0, -1500], [60, 3, 0], [90, 0, 0]
+];
+for (const [n, k, t] of plan) ekle(n, k, t);
+const PIST = parcalar.length * SEG;
+const BITIS = PIST * 2;   // 2 tur
+
+// Trafik: yavaş giden arabalar
+const RENKLER = ['#e74c3c', '#3498db', '#f1c40f', '#9b59b6', '#ecf0f1', '#1abc9c', '#e67e22'];
+const trafik = [];
+for (let i = 0; i < 42; i++) {
+  trafik.push({ z: (i * 0.023 + 0.05) * PIST % PIST, x: [-0.66, 0, 0.66][i % 3] + (Math.random() - .5) * .2,
+    hiz: 3500 + Math.random() * 3500, renk: RENKLER[i % RENKLER.length] });
+}
+
+// ---- Oyuncu ----
+const MAKS = 12000, NITRO_MAKS = 17500;
+let o = { z: 0, x: 0, hiz: 0, nitro: 1, sarsinti: 0, kayma: 0, toplam: 0 };
+let durum = 'bekle', sure = 0, enIyi = +localStorageOku('enIyi') || 0, bitisZamani = 0, carpma = 0;
+function localStorageOku(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+function localStorageYaz(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+
+const tus = {};
+const harita = { ArrowUp: 'gaz', KeyW: 'gaz', ArrowDown: 'fren', KeyS: 'fren', ArrowLeft: 'sol', KeyA: 'sol',
+  ArrowRight: 'sag', KeyD: 'sag', ShiftLeft: 'nitro', ShiftRight: 'nitro', Space: 'el' };
+addEventListener('keydown', e => { const a = harita[e.code]; if (a) { tus[a] = true; e.preventDefault(); } });
+addEventListener('keyup', e => { const a = harita[e.code]; if (a) { tus[a] = false; e.preventDefault(); } });
+addEventListener('blur', () => { for (const k in tus) tus[k] = false; });
+
+function sifirla() {
+  o = { z: 0, x: 0, hiz: 0, nitro: 1, sarsinti: 0, kayma: 0, toplam: 0 };
+  sure = 0; carpma = 0; durum = 'geri'; geriSayim = 3;
+}
+let geriSayim = 0;
+
+function parca(z) { return parcalar[Math.floor(((z % PIST) + PIST) % PIST / SEG)]; }
+
+// Girdi: Mac uygulamasından gelen yüz verisi (kademeli) varsa o, yoksa klavye
+// gi.gaz/fren 0…1, gi.yon -1…+1, gi.nitro/el açık-kapalı
+const gi = { gaz: 0, fren: 0, yon: 0, nitro: false, el: false, kaynak: 'klavye' };
+let yuz = null, yuzZaman = 0;
+async function yuzuOku() {
+  if (location.protocol !== 'http:') return;          // dosyadan açıldıysa yalnız klavye
+  for (;;) {
+    try { const r = await fetch('/durum', { cache: 'no-store' }); yuz = await r.json(); yuzZaman = performance.now(); }
+    catch (e) { await new Promise(r => setTimeout(r, 500)); }
+    await new Promise(r => setTimeout(r, 15));
+  }
+}
+yuzuOku();
+function girdiOku() {
+  const taze = yuz && performance.now() - yuzZaman < 400 && yuz.bagli;
+  if (taze) {
+    gi.kaynak = 'yuz';
+    const t = yuz.takip;
+    gi.gaz = t ? yuz.gaz : 0; gi.fren = t ? yuz.fren : 0; gi.yon = t ? yuz.direksiyon : 0;
+    gi.nitro = t && yuz.nitro; gi.el = t && yuz.elFreni; gi.takip = t;
+  } else {
+    gi.kaynak = 'klavye'; gi.takip = true;
+    gi.gaz = tus.gaz ? 1 : 0; gi.fren = tus.fren ? 1 : 0; gi.yon = (tus.sag ? 1 : 0) - (tus.sol ? 1 : 0);
+    gi.nitro = !!tus.nitro; gi.el = !!tus.el;
+  }
+}
+
+function guncelle(dt) {
+  girdiOku();
+  ort.gaz += (gi.gaz - ort.gaz) * Math.min(1, dt * 12);
+  ort.fren += (gi.fren - ort.fren) * Math.min(1, dt * 12);
+  ort.sol += (Math.max(0, -gi.yon) - ort.sol) * Math.min(1, dt * 12);
+  ort.sag += (Math.max(0, gi.yon) - ort.sag) * Math.min(1, dt * 12);
+
+  if (durum === 'bekle') { if (gi.gaz > 0.3) sifirla(); return; }
+  if (durum === 'geri') { geriSayim -= dt; if (geriSayim <= 0) durum = 'yaris'; return; }
+  if (durum === 'bitti') { o.hiz *= Math.pow(0.3, dt); o.z += o.hiz * dt; if (performance.now() - bitisZamani > 3000 && gi.gaz > 0.3) sifirla(); return; }
+
+  sure += dt;
+  const p = parca(o.z + KAMERA_Y);
+  const oran = o.hiz / MAKS;
+  const nitroAcik = gi.nitro && o.nitro > 0 && gi.gaz > 0.1;
+  const tavan = nitroAcik ? NITRO_MAKS : MAKS * Math.max(0.35, gi.gaz);   // az açık ağız = düşük hız
+
+  if (gi.gaz > 0.05) o.hiz += (nitroAcik ? 9000 : 5200) * dt * Math.max(0, 1 - o.hiz / (tavan * 1.05));
+  else o.hiz -= 1800 * dt;
+  if (o.hiz > tavan && gi.gaz > 0.05) o.hiz -= 2500 * dt;
+  o.hiz -= 14000 * gi.fren * dt;
+  if (gi.el) { o.hiz -= 6000 * dt; }
+  if (nitroAcik) o.nitro = Math.max(0, o.nitro - dt / 3.2); else o.nitro = Math.min(1, o.nitro + dt / 14);
+  if (o.hiz > NITRO_MAKS * 0.99 || (!nitroAcik && o.hiz > MAKS)) o.hiz -= 9000 * dt;
+
+  // Direksiyon kademeli; virajın dışa itmesi tam direksiyonun yarısını geçmez (önceden dönemiyordun)
+  o.x += gi.yon * (gi.el ? 3.4 : 2.4) * dt * Math.max(0.3, oran);
+  o.kayma += ((gi.el ? gi.yon : 0) - o.kayma) * Math.min(1, dt * 6);
+  o.x -= dt * oran * p.kivrim * 0.22;              // viraj dışa iter
+
+  if (Math.abs(o.x) > 1.05) {                        // yol dışı: çim yavaşlatır, sarsar
+    if (o.hiz > MAKS * 0.3) o.hiz -= 11000 * dt;
+    o.sarsinti = 1;
+  }
+  o.x = Math.max(-2.2, Math.min(2.2, o.x));
+
+  // Trafik ve çarpışma
+  for (const t of trafik) {
+    t.z = (t.z + t.hiz * dt) % PIST;
+    const fark = ((t.z - (o.z + KAMERA_Y + 330)) % PIST + PIST) % PIST;
+    if ((fark < 220 || fark > PIST - 60) && Math.abs(t.x - o.x) < 0.42 && o.hiz > t.hiz) {
+      o.hiz = t.hiz * 0.45; o.sarsinti = 2.5; carpma++;
+      o.x += (o.x >= t.x ? 1 : -1) * 0.12;
+    }
+  }
+  o.sarsinti = Math.max(0, o.sarsinti - dt * 3);
+  o.hiz = Math.max(0, o.hiz);
+  o.z += o.hiz * dt; o.toplam += o.hiz * dt;
+  if (o.toplam >= BITIS) {
+    durum = 'bitti'; bitisZamani = performance.now();
+    if (!enIyi || sure < enIyi) { enIyi = sure; localStorageYaz('enIyi', String(sure)); }
+  }
+}
+const ort = { gaz: 0, fren: 0, sol: 0, sag: 0 };
+
+// ---- Çizim ----
+function yansit(dx, dy, dz, kameraX) {
+  const olcek = FOV_DERINLIK / dz;
+  return { x: W / 2 + olcek * (dx - kameraX) * W / 2, y: H / 2 - olcek * dy * H / 2, w: olcek * YOL * W / 2, s: olcek };
+}
+function dortgen(c, x1, y1, w1, x2, y2, w2) {
+  g.fillStyle = c; g.beginPath();
+  const e = devicePixelRatio; g.moveTo(x1 - w1, y1 + e); g.lineTo(x2 - w2, y2); g.lineTo(x2 + w2, y2); g.lineTo(x1 + w1, y1 + e); g.fill();
+}
+
+function ciz() {
+  const sars = o.sarsinti > 0 ? (Math.random() - .5) * o.sarsinti * 6 * devicePixelRatio : 0;
+  g.save(); g.translate(sars, sars * 0.6);
+
+  // Gökyüzü: alacakaranlık
+  const gok = g.createLinearGradient(0, 0, 0, H * 0.6);
+  gok.addColorStop(0, '#141a3a'); gok.addColorStop(0.6, '#7a3a6a'); gok.addColorStop(1, '#f39c6b');
+  g.fillStyle = gok; g.fillRect(-20, -20, W + 40, H + 40);
+  // Güneş ve dağlar (virajda kayar)
+  const bas = parca(o.z);
+  const kayis = ((o.z / PIST) * 2400 + bas.kivrim * 40) % W;
+  g.fillStyle = '#ffd38a'; g.beginPath(); g.arc(W * 0.7 - kayis * 0.1, H * 0.42, H * 0.09, 0, 7); g.fill();
+  for (let kat = 0; kat < 2; kat++) {
+    g.fillStyle = kat ? '#2a1f45' : '#3d2b5c';
+    g.beginPath(); g.moveTo(-20, H * 0.55);
+    for (let x = -20; x <= W + 40; x += W / 40) {
+      const k = (x + kayis * (kat ? 0.35 : 0.2)) / W * Math.PI * 2;
+      g.lineTo(x, H * (0.5 - kat * 0.03) - H * (0.05 + 0.04 * Math.sin(k * 3 + kat) + 0.03 * Math.sin(k * 7)));
+    }
+    g.lineTo(W + 40, H); g.lineTo(-20, H); g.fill();
+  }
+
+  // Yol: arkadan öne değil, önden arkaya çiz ve tepe çizgisiyle kırp
+  const basIndeks = Math.floor(o.z / SEG);
+  const ilerleme = (o.z % SEG) / SEG;
+  const oyuncuParca = parca(o.z + KAMERA_Y);
+  const kameraYukseklik = KAMERA_Y + oyuncuParca.y1 + (oyuncuParca.y2 - oyuncuParca.y1) * ilerleme;
+  let dx = -(bas.kivrim * ilerleme), x = 0, enAlt = H;
+  const cizilen = [];
+  for (let n = 0; n < GORUS; n++) {
+    const p = parcalar[(basIndeks + n) % parcalar.length];
+    const dongu = (basIndeks + n) >= parcalar.length * Math.ceil((basIndeks + 1) / parcalar.length) ? PIST : 0;
+    const z1 = n * SEG - (o.z % SEG), z2 = z1 + SEG;
+    if (z1 <= 1) { x += dx; dx += p.kivrim; continue; }
+    const a = yansit(x, p.y1 - kameraYukseklik, z1, o.x * YOL);
+    const b = yansit(x + dx, p.y2 - kameraYukseklik, z2, o.x * YOL);
+    x += dx; dx += p.kivrim;
+    cizilen.push({ p, a, b, z1 });
+    if (b.y >= enAlt) continue;
+    const koyu = Math.floor(p.i / 3) % 2;
+    const sis = Math.min(1, n / GORUS);
+    g.fillStyle = koyu ? '#1f5a2e' : '#24683a'; g.fillRect(-20, b.y, W + 40, enAlt - b.y + 1);
+    dortgen(koyu ? '#c0392b' : '#ecf0f1', a.x, a.y, a.w * 1.12, b.x, b.y, b.w * 1.12);
+    dortgen(koyu ? '#3b3f4a' : '#41454f', a.x, a.y, a.w, b.x, b.y, b.w);
+    if (koyu) for (let s = 1; s < SERIT; s++) {
+      const ox1 = a.x - a.w + 2 * a.w * s / SERIT, ox2 = b.x - b.w + 2 * b.w * s / SERIT;
+      dortgen('#e8e2c8', ox1, a.y, a.w * 0.02, ox2, b.y, b.w * 0.02);
+    }
+    if (sis > 0.5) { g.fillStyle = `rgba(122,58,106,${(sis - 0.5) * 1.2})`; g.fillRect(-20, b.y, W + 40, enAlt - b.y + 1); }
+    enAlt = b.y;
+  }
+
+  // Trafik: uzaktan yakına
+  const arabalar = [];
+  for (const t of trafik) {
+    let fark = ((t.z - o.z) % PIST + PIST) % PIST;
+    if (fark < SEG || fark > GORUS * SEG) continue;
+    const n = Math.floor(fark / SEG) - 0;
+    const c = cizilen.find(q => q.z1 > fark - SEG && q.z1 <= fark) || null;
+    if (!c) continue;
+    const t01 = (fark - c.z1) / SEG;
+    const sx = c.a.x + (c.b.x - c.a.x) * t01, sy = c.a.y + (c.b.y - c.a.y) * t01, sw = c.a.w + (c.b.w - c.a.w) * t01;
+    arabalar.push({ fark, x: sx + sw * t.x, y: sy, w: sw * 0.36, renk: t.renk });
+  }
+  arabalar.sort((a, b) => b.fark - a.fark);
+  for (const a of arabalar) araba(a.x, a.y, a.w, a.renk, 0);
+
+  // Oyuncu
+  const pw = W * 0.16, py = H * 0.93;
+  araba(W / 2, py + Math.sin(performance.now() / 40) * (o.hiz > 100 ? 1 : 0) * devicePixelRatio, pw,
+        '#ff3b5c', (ort.sag - ort.sol) * 0.08 + o.kayma * 0.15, gi.fren > 0.2 || gi.el, gi.nitro && o.nitro > 0 && gi.gaz > 0.1);
+  g.restore();
+  hud();
+}
+
+function araba(x, y, w, renk, egim, stop, alev) {
+  const h = w * 0.55;
+  g.save(); g.translate(x, y); g.rotate(egim);
+  g.fillStyle = 'rgba(0,0,0,.35)'; g.beginPath(); g.ellipse(0, 0, w * 0.55, h * 0.12, 0, 0, 7); g.fill();
+  g.fillStyle = '#111'; g.fillRect(-w * 0.48, -h * 0.28, w * 0.18, h * 0.28); g.fillRect(w * 0.30, -h * 0.28, w * 0.18, h * 0.28);
+  g.fillStyle = renk; g.beginPath(); g.roundRect(-w / 2, -h * 0.72, w, h * 0.5, w * 0.06); g.fill();
+  g.beginPath(); g.roundRect(-w * 0.34, -h, w * 0.68, h * 0.34, w * 0.08); g.fill();
+  g.fillStyle = 'rgba(20,30,50,.85)'; g.beginPath(); g.roundRect(-w * 0.28, -h * 0.94, w * 0.56, h * 0.24, w * 0.05); g.fill();
+  g.fillStyle = stop ? '#ff2a2a' : '#7a1010';
+  g.fillRect(-w * 0.44, -h * 0.58, w * 0.16, h * 0.1); g.fillRect(w * 0.28, -h * 0.58, w * 0.16, h * 0.1);
+  if (stop) { g.fillStyle = 'rgba(255,40,40,.25)'; g.beginPath(); g.ellipse(0, -h * 0.53, w * 0.7, h * 0.2, 0, 0, 7); g.fill(); }
+  g.fillStyle = '#ddd'; g.fillRect(-w * 0.12, -h * 0.4, w * 0.24, h * 0.08);
+  if (alev) {
+    for (const s of [-1, 1]) {
+      const fl = g.createLinearGradient(0, -h * 0.25, 0, h * 0.25);
+      fl.addColorStop(0, '#fff6a0'); fl.addColorStop(0.4, '#ff9a1f'); fl.addColorStop(1, 'rgba(255,60,0,0)');
+      g.fillStyle = fl; g.beginPath();
+      g.ellipse(s * w * 0.22, h * 0.02, w * 0.05, h * (0.2 + Math.random() * 0.12), 0, 0, 7); g.fill();
+    }
+  }
+  g.restore();
+}
+
+function hud() {
+  const d = devicePixelRatio, k = Math.min(W, H) / 900;
+  g.textBaseline = 'top';
+  // Hız göstergesi
+  const kmh = Math.round(o.hiz / MAKS * 220);
+  g.fillStyle = 'rgba(0,0,0,.45)'; g.beginPath(); g.roundRect(W - 260 * k, H - 150 * k, 230 * k, 120 * k, 18 * k); g.fill();
+  g.fillStyle = '#fff'; g.font = `800 ${64 * k}px -apple-system, system-ui`; g.textAlign = 'right';
+  g.fillText(kmh, W - 100 * k, H - 140 * k);
+  g.font = `600 ${22 * k}px -apple-system, system-ui`; g.fillText('km/s', W - 45 * k, H - 104 * k);
+  // Nitro çubuğu
+  g.fillStyle = 'rgba(255,255,255,.15)'; g.fillRect(W - 240 * k, H - 62 * k, 190 * k, 14 * k);
+  g.fillStyle = o.nitro > 0.15 ? '#ff9a1f' : '#884'; g.fillRect(W - 240 * k, H - 62 * k, 190 * k * o.nitro, 14 * k);
+  g.font = `700 ${16 * k}px -apple-system, system-ui`; g.textAlign = 'left'; g.fillStyle = '#fff';
+  g.fillText('NİTRO', W - 240 * k, H - 86 * k);
+
+  // Süre, tur, çarpma
+  const tur = Math.min(2, Math.floor(o.toplam / PIST) + 1);
+  g.fillStyle = 'rgba(0,0,0,.45)'; g.beginPath(); g.roundRect(30 * k, 30 * k, 300 * k, 120 * k, 18 * k); g.fill();
+  g.fillStyle = '#fff'; g.font = `800 ${46 * k}px -apple-system, system-ui`;
+  g.fillText(zaman(sure), 52 * k, 44 * k);
+  g.font = `600 ${20 * k}px -apple-system, system-ui`; g.fillStyle = '#cfd6ff';
+  g.fillText(`Tur ${tur}/2   ·   Çarpma ${carpma}${enIyi ? '   ·   En iyi ' + zaman(enIyi) : ''}`, 52 * k, 106 * k);
+
+  // Basılı tuşlar (yüzün ne yaptığı ekranda görünsün)
+  const kutular = [['←', ort.sol], ['GAZ', ort.gaz], ['FREN', ort.fren], ['→', ort.sag]];
+  let x0 = W / 2 - 2 * 92 * k;
+  for (const [ad, v] of kutular) {
+    g.fillStyle = `rgba(${ad === 'FREN' ? '255,70,70' : ad === 'GAZ' ? '70,220,110' : '255,255,255'},${0.12 + v * 0.75})`;
+    g.beginPath(); g.roundRect(x0, 30 * k, 80 * k, 56 * k, 12 * k); g.fill();
+    g.fillStyle = v > 0.5 ? '#000' : '#fff'; g.textAlign = 'center'; g.font = `800 ${22 * k}px -apple-system, system-ui`;
+    g.fillText(ad, x0 + 40 * k, 46 * k); x0 += 92 * k;
+  }
+  const rozet = (ad, acik, renk, x) => {
+    g.fillStyle = acik ? renk : 'rgba(255,255,255,.1)'; g.beginPath(); g.roundRect(x, 98 * k, 172 * k, 36 * k, 18 * k); g.fill();
+    g.fillStyle = acik ? '#000' : 'rgba(255,255,255,.6)'; g.font = `700 ${17 * k}px -apple-system, system-ui`;
+    g.fillText(ad, x + 86 * k, 107 * k);
+  };
+  rozet('NİTRO (kaş)', gi.nitro, '#ff9a1f', W / 2 - 180 * k);
+  rozet('EL FRENİ (göz)', gi.el, '#ffd84a', W / 2 + 8 * k);
+  g.textAlign = 'left';
+  // Girdi kaynağı: yüz mü klavye mi
+  g.font = `700 ${16 * k}px -apple-system, system-ui`; g.textAlign = 'center';
+  const kaynakYazi = gi.kaynak === 'yuz' ? (gi.takip ? '● YÜZ BAĞLI' : '● YÜZ GÖRÜNMÜYOR') : '● KLAVYE';
+  g.fillStyle = gi.kaynak === 'yuz' ? (gi.takip ? '#5dff8a' : '#ffb84a') : 'rgba(255,255,255,.5)';
+  g.fillText(kaynakYazi, W / 2, 146 * k);
+  g.textAlign = 'left';
+
+  // Ortadaki yazılar
+  let yazi = null, alt = null;
+  if (durum === 'bekle') { yazi = 'YÜZLE YARIŞ'; alt = gi.kaynak === 'yuz' ? 'Başlamak için gülümse (gaz)' : 'Başlamak için ↑'; }
+  if (durum === 'geri') yazi = String(Math.ceil(geriSayim));
+  if (durum === 'yaris' && sure < 0.8) yazi = 'BAŞLA!';
+  if (durum === 'bitti') { yazi = zaman(sure); alt = performance.now() - bitisZamani > 3000 ? 'Yeniden: gaz ver' : (sure <= enIyi ? 'Yeni rekor!' : 'Bitti'); }
+  if (yazi) {
+    g.textAlign = 'center'; g.fillStyle = '#fff'; g.shadowColor = 'rgba(0,0,0,.6)'; g.shadowBlur = 20 * k;
+    g.font = `900 ${110 * k}px -apple-system, system-ui`; g.fillText(yazi, W / 2, H * 0.28);
+    if (alt) { g.font = `700 ${32 * k}px -apple-system, system-ui`; g.fillText(alt, W / 2, H * 0.28 + 130 * k); }
+    g.shadowBlur = 0; g.textAlign = 'left';
+  }
+}
+function zaman(s) { const m = Math.floor(s / 60), r = s - m * 60; return `${m}:${r.toFixed(2).padStart(5, '0')}`; }
+
+let onceki = performance.now();
+function kare(t) {
+  const dt = Math.min(0.05, (t - onceki) / 1000); onceki = t;
+  guncelle(dt); ciz();
+  requestAnimationFrame(kare);
+}
+requestAnimationFrame(kare);
+// Deneme: yaris.html#demo kendi kendine sürer (tuş gerekmez)
+// #demo=20: 20 saniye ileriden başla (ekran görüntüsüyle denemek için)
+const demo = location.hash.match(/^#demo(?:=(\d+))?/);
+if (demo) setInterval(() => { tus.gaz = true; const t = performance.now() / 1000; tus.sol = Math.sin(t) < -0.5; tus.sag = Math.sin(t) > 0.5; tus.nitro = t % 6 > 4; }, 50);
+if (demo && demo[1]) { tus.gaz = true; sifirla(); for (let i = 0; i < +demo[1] * 60; i++) { const t = i / 60; tus.sol = Math.sin(t) < -0.5; tus.sag = Math.sin(t) > 0.5; guncelle(1 / 60); } }
+</script>
+</body>
+</html>

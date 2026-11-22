@@ -1,21 +1,21 @@
-"""Yüz Direksiyon (Windows): Denemeler > "Yüzle sür"den gelen yüz verisini sanal Xbox koluna (ya da klavyeye) çevirir.
+"""iPhone Face Controller, Windows receiver: turns the face values from the iPhone app into a virtual Xbox controller
+(or keyboard keys). The game thinks a real controller is plugged in: steering and gas are fully analog.
 
-Telefon ev Wi-Fi'ında Bonjour'da _denemeyuz._udp arar; bu program o adla yayın yapar (zeroconf).
-Paket: CarPlayDeneme/YuzSurus/YuzSurusProtokol.swift ile aynı JSON.
+The phone looks for _denemeyuz._udp on Bonjour; this program advertises that name (zeroconf). Packet format: iOS/FaceController/Protocol.swift.
 
-Kurulum (bir kez):  pip install zeroconf vgamepad
-  vgamepad ilk kurulumda ViGEmBus sürücüsünü de kurar (onay penceresi çıkar).
-Çalıştır:           python yuz_direksiyon.py            (sanal Xbox kolu)
-                    python yuz_direksiyon.py --tek-eksen  (gaz/fren sol çubuğun yukarı/aşağısı; NFS 2 gibi eski oyunlar için)
-                    python yuz_direksiyon.py --klavye   (ok tuşları; kol tanımayan oyunlar için)
-                    python yuz_direksiyon.py --kuru     (hiçbir şey basmaz, değerleri yazar; deneme)
-Kol eşlemesi: sol çubuk X = direksiyon, sağ tetik = gaz, sol tetik = fren, A = nitro, B = el freni.
-  Eski (DirectInput) oyunlar Xbox kolunun iki tetiğini TEK eksende birleşik görür (ikisine birden basınca sıfırlanır,
-  gaz ve fren ayrı atanamaz). --tek-eksen ile gaz = sol çubuk yukarı, fren = sol çubuk aşağı olur; oyunda "hızlanma/fren"
-  için sol çubuğun dikey eksenini ata. Tetikler bu modda kullanılmaz.
-Güvenlik: 0,3 sn paket gelmezse ya da yüz kaybolursa kol ortalanır, tuşlar bırakılır. Ctrl+C ile çık.
+Setup (once):   pip install -r requirements.txt     (zeroconf + vgamepad; vgamepad also installs the ViGEmBus driver)
+Run:            python face_controller.py                 virtual Xbox controller
+                python face_controller.py --single-axis   gas/brake on the left stick Y axis (old DirectInput games)
+                python face_controller.py --keyboard      arrow keys, Shift, Space (games without controller support)
+                python face_controller.py --dry-run       presses nothing, prints the values (test)
+Controller mapping: left stick X = steering, right trigger = gas, left trigger = brake, A = nitro, B = handbrake.
+  Old (DirectInput) games see the two Xbox triggers as ONE combined axis; --single-axis puts gas on left stick up and
+  brake on left stick down, map "accelerate/brake" to the left stick's vertical axis in the game.
+Safety: if no packet arrives for 0.3 s or the face is lost, the stick centers and everything is released. Ctrl+C to quit.
+(TR) Türkçe bayraklar da çalışır: --tek-eksen, --klavye, --kuru. Mesajlar Windows Türkçeyse Türkçe çıkar.
 """
 import json
+import locale
 import socket
 import sys
 import threading
@@ -23,9 +23,16 @@ import time
 
 PORT = 47800
 SERVIS = "_denemeyuz._udp.local."
-KURU = "--kuru" in sys.argv
-KLAVYE = "--klavye" in sys.argv
-TEK_EKSEN = "--tek-eksen" in sys.argv
+KURU = "--kuru" in sys.argv or "--dry-run" in sys.argv
+KLAVYE = "--klavye" in sys.argv or "--keyboard" in sys.argv
+TEK_EKSEN = "--tek-eksen" in sys.argv or "--single-axis" in sys.argv
+try:
+    TR = (locale.getlocale()[0] or locale.getdefaultlocale()[0] or "").lower().startswith(("tr", "turkish"))
+except Exception:
+    TR = False
+
+def L(tr, en):
+    return tr if TR else en
 AD = socket.gethostname()
 
 # ---------- Çıkış: sanal Xbox kolu ----------
@@ -56,8 +63,8 @@ class Kol:
         self.k.reset(); self.k.update()
 
     def basili(self, d):
-        return " ".join(x for x, v in [("Sol", d["direksiyon"] < -0.05), ("Sağ", d["direksiyon"] > 0.05),
-                                         ("Gaz", d["gaz"] > 0.05), ("Fren", d["fren"] > 0.05),
+        return " ".join(x for x, v in [(L("Sol", "Left"), d["direksiyon"] < -0.05), (L("Sağ", "Right"), d["direksiyon"] > 0.05),
+                                         (L("Gaz", "Gas"), d["gaz"] > 0.05), (L("Fren", "Brake"), d["fren"] > 0.05),
                                          ("A", d["nitro"]), ("B", d["elFreni"])] if v)
 
 # ---------- Çıkış: klavye (DirectX oyunları için tarama kodu, SendInput) ----------
@@ -65,7 +72,7 @@ class Klavye:
     # (tarama kodu, genişletilmiş mi): ok tuşları genişletilmiş
     TUS = {"gaz": (0x48, True), "fren": (0x50, True), "sol": (0x4B, True), "sag": (0x4D, True),
            "nitro": (0x2A, False), "elFreni": (0x39, False)}
-    AD = {"gaz": "↑", "fren": "↓", "sol": "←", "sag": "→", "nitro": "Shift", "elFreni": "Boşluk"}
+    AD = {"gaz": "↑", "fren": "↓", "sol": "←", "sag": "→", "nitro": "Shift", "elFreni": "Space"}
 
     def __init__(self):
         import ctypes
@@ -128,7 +135,7 @@ class Kuru:
     def yaz(self, d): pass
     def birak(self): pass
     def basili(self, d):
-        return f"dir {d['direksiyon']:+.2f} gaz {d['gaz']:.2f} fren {d['fren']:.2f}"
+        return f"steer {d['direksiyon']:+.2f} gas {d['gaz']:.2f} brake {d['fren']:.2f}"
 
 # ---------- Ağ ----------
 BOS = {"direksiyon": 0.0, "gaz": 0.0, "fren": 0.0, "nitro": False, "elFreni": False}
@@ -171,8 +178,11 @@ def main():
     sok.bind(("0.0.0.0", PORT))
     threading.Thread(target=dinle, args=(sok,), daemon=True).start()
     z, bilgi, ip = yayinla()
-    mod = "kuru" if KURU else ("klavye" if KLAVYE else ("sanal Xbox kolu, gaz/fren sol çubukta" if TEK_EKSEN else "sanal Xbox kolu"))
-    print(f"Yüz Direksiyon hazır: {AD} ({ip}:{PORT}), çıkış: {mod}. Telefonda Denemeler > Yüzle sür. Çıkmak: Ctrl+C")
+    mod = (L("kuru", "dry run") if KURU else (L("klavye", "keyboard") if KLAVYE else
+           (L("sanal Xbox kolu, gaz/fren sol çubukta", "virtual Xbox controller, gas/brake on the left stick") if TEK_EKSEN
+            else L("sanal Xbox kolu", "virtual Xbox controller"))))
+    print(L(f"Yüz Direksiyon hazır: {AD} ({ip}:{PORT}), çıkış: {mod}. Telefonda uygulamayı aç, düz bak, Ortala. Çıkmak: Ctrl+C",
+            f"Face Controller ready: {AD} ({ip}:{PORT}), output: {mod}. Open the app on the iPhone, look straight, tap Center. Quit: Ctrl+C"))
     son_cevap = son_yazi = 0.0
     try:
         while True:
@@ -191,7 +201,8 @@ def main():
                 sok.sendto(json.dumps(cevap).encode(), adres)
             if simdi - son_yazi > 0.5:
                 son_yazi = simdi
-                durum = ("yüz var  " + cikis.basili(d)) if canli else ("telefon bağlı, yüz yok" if p and simdi - zaman < 1.5 else "telefon bekleniyor")
+                durum = ((L("yüz var  ", "face  ") + cikis.basili(d)) if canli else
+                         (L("telefon bağlı, yüz yok", "phone connected, no face") if p and simdi - zaman < 1.5 else L("telefon bekleniyor", "waiting for the phone")))
                 print(f"\r{durum:<60}", end="", flush=True)
             time.sleep(0.01)
     except KeyboardInterrupt:
@@ -200,7 +211,7 @@ def main():
         cikis.birak()
         z.unregister_service(bilgi)
         z.close()
-        print("\nKapandı, kol ortalandı.")
+        print(L("\nKapandı, kol ortalandı.", "\nStopped, controller centered."))
 
 if __name__ == "__main__":
     main()
